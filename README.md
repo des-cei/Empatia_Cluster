@@ -41,21 +41,6 @@ The active data loader uses WEMAC-style participant/video records and `Reportada
 
 ## Representation and models
 
-### Physiological feature maps
-
-The framework uses **123 handcrafted descriptors**: 84 cardiovascular/BVP features, 34 GSR features, and 5 skin-temperature features. The cache loader assembles feature values with emotion labels, participant IDs, and video IDs. It replaces nonfinite feature values with zero and applies an interquartile-range outlier routine before normalization.
-
-The basic map generator groups frames by participant and video and uses `numpy.resize` to create square maps. With all descriptors, maps have shape `123 × 123` and are stacked as `(123, 123, N)`. `numpy.resize` repeats or truncates values; it is not image interpolation.
-
-| Strategy | Behavior |
-| --- | --- |
-| `AllFromOne` | Construct maps from a participant's own video sequence. |
-| `HalfAndHalf` | Interleave frames with a sampled participant sequence for the same video and label. |
-| `HalfAndRandom` | Mix frames with label-compatible samples. |
-| `All_concat` | Training-script option combining the three map collections. |
-
-The adapter converts maps to `(N, 1, H, W)` and removes the singleton dimension before the parallel model. Consequently, the model interprets `H` as sequence length and `W` as input feature count. Preserve and verify this ordering when adapting the representation.
-
 ### Parallel CNN–LSTM
 
 The principal model is `ParallelCNNLSTMModel` in `Training/models/cnn_lstm.py`:
@@ -106,16 +91,6 @@ python -m pip install numpy scipy pandas scikit-learn matplotlib \
 TensorFlow is additionally required for `Edge_training/train_general_WEMAC.py`. There is no pinned dependency file or documented, validated environment for this repository; the list above is an import-based starting point.
 
 The main PyTorch loops explicitly cast inputs to `torch.cuda.FloatTensor`, so they require CUDA as written. To support CPU execution, replace those casts with device-aware conversion, such as `inputs.to(device=device, dtype=torch.float32)`.
-
-### Missing dependency and compatibility adjustments
-
-Before running an experiment:
-
-- Restore a compatible **`FWN_main`** package exposing `normalization.DWN`, `normalization.FWN`, `normalization.plots`, and `methods.wrapper`. The companion repositories contain related implementations; verify compatibility before reuse. This import is required even when using an existing normalization log.
-- Replace hard-coded `/home/junjiao/...` and Windows paths with your local paths. Keep the repository root on `PYTHONPATH`; relative data paths depend on the working directory.
-- Update legacy standalone calls to `data_extraction` and `get_normalization`. Their current interfaces require training participants, test participants, and an approach selector. In particular, the normalization script's main block and `CNN_LSTM_random.py` use outdated calls.
-- Replace the `Now_V_location[0] != []` check in `AllFromOne` with an explicit size check, and handle missing participant/video groups in augmentation. NumPy array/list comparisons do not reliably test whether an index array is empty.
-- Treat `Create_feature_maps_Dimension.py` as an incomplete auxiliary path: it imports `data_extraction_Dimension`, which is absent from the included loader. The main binary cluster experiments use `Create_feature_maps.py` instead.
 
 ## Required input files
 
@@ -205,33 +180,6 @@ python clustering_LOSO.py --lr 0.1
 | `clustering_baseline.py` | Train on the selected cluster and evaluate training-role subjects from other clusters. Despite its name, this is not an all-subject global-model baseline. |
 
 Main CNN–LSTM defaults are cross-entropy loss, SGD with learning rate `0.1`, momentum `0.9`, weight decay `5e-4`, and cosine scheduling with `T_max=200`, for 100 epochs. Standard approach scripts use batch size 64; the LOSO scripts use 128. These PyTorch settings differ from the TensorFlow/Adam setup described in the thesis.
-
-## Outputs and edge experiments
-
-Training prints loss, accuracy, weighted F1-score, and repeated-run summaries. Capture console output if a persistent log is needed:
-
-```bash
-python clustering_LOSO.py --lr 0.1 > clustering_loso.log 2>&1
-```
-
-Main cluster/LOSO checkpoint-saving code is commented out; those scripts do not automatically produce deployable models. Some `Edge_training/` scripts save `.pth` checkpoints under `checkpoint/`.
-
-`Edge_training/train_general_WEMAC.py` contains a separate TensorFlow ResNet101 experiment and TFLite integer-quantization conversion. It is not a conversion of the parallel PyTorch CNN–LSTM. Its fine-tuning export currently writes the general-model conversion buffer again; correct this before treating the output as a fine-tuned model.
-
-`Edge_training/Quantization_pth.py` targets an EfficientNet checkpoint and prepares/converts PyTorch quantization modules, but does not run representative calibration data between preparation and conversion. These utilities need validation for their target architecture and device; they do not establish a complete Coral or microcontroller deployment workflow.
-
-## Evaluation and reproducibility
-
-For a faithful subject-independent evaluation, preserve the thesis's separation between cloud training users and each unseen test user. Account for the following script behavior:
-
-- **External clustering:** Fit clustering and select its configuration using training subjects only in each fold. Keep held-out labels out of cluster assignment and model selection. The CSV reader cannot verify how assignments were produced.
-- **Normalization:** The current helper applies transformations and min–max scaling independently to training and test arrays. For an inductive evaluation, fit preprocessing on training data and reuse those fitted parameters on held-out data. Document any intentional use of unlabeled user data for calibration.
-- **Repeated initialization:** The standard approach scripts reuse one model across repeated calls. Create a fresh model for every independent run. `clustering_LOSO.py` already constructs one inside each repetition.
-- **Metric aggregation:** LOSO scripts run five repetitions and discard the two lowest accuracy values and, separately, the two lowest F1 values. Report all runs with dispersion for an unbiased repeated-run summary; these retained metrics can correspond to different runs.
-- **Epoch selection:** Accuracy and F1 maxima are selected independently over test epochs. Use validation data for checkpoint selection and evaluate the final held-out subject once.
-- **Augmentation and adaptation:** `All_concat` augments both training and evaluation data. Split original recordings before augmentation and keep adaptation samples disjoint from final evaluation samples. In particular, some fine-tuning scripts evaluate on the full user dataset after adapting on a subset of it.
-
-Record participant assignments, random seeds, feature order, normalization choices, architecture, augmentation, and selection rules with each result. The default scripts alone should not be presented as reproducing the thesis's final protocol or scores.
 
 ## Citation
 
